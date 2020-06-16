@@ -9,22 +9,23 @@
 //D12,11,5,4,3,2 - Screen
 //A0 - Main Bus Voltage
 //A1 - Main Cap Voltage
-//D6 - Relay (LOW == ON)
-//D7 - Relay
+//D6 - Relay for inverter  (LOW == ON)
+//D7 - Relay for cap bank  (LOW == ON)
 
 //Constants
-#define hist_bus 200 
+#define hist_bus 150 
 #define hist_cap 500 //assert %10==0
 #define hist_cap_average_div 10
+#define min_inverter_on_time 2000 //in ms
 
 //Libraries
 #include <LiquidCrystal.h>
 #include <String.h>
 
 //Vars - Display
-LiquidCrystal bAG(12, 11, 5, 4, 3, 2);
+LiquidCrystal lcd(12, 11, 5, 4, 3, 2);
 unsigned long dispTime = millis();
-int bus_display_val = 0;
+int bus_display_val = 0;   //not used yet, might implement
 int cap_display_val = 0;
 
 //Vars - Input/Averaging/Trend
@@ -38,10 +39,14 @@ bool trend = false;
 //Vars - Relays/Switching
 int desired_joules = 80; 
 bool bank_relay = true; //true == off
+bool inverter_status = true; //true == off
+unsigned long inverterTime = millis();
+bool fake_button_press = true; //true == off; press comes from serial;
+
 
 //Initialize HW and Vars
 void setup() {
-  bAG.begin(16, 2);
+  lcd.begin(16, 2);
   pinMode(A0, INPUT);
   pinMode(A1, INPUT);
   pinMode(6, OUTPUT);
@@ -50,7 +55,7 @@ void setup() {
   digitalWrite(7, HIGH);
   for(int i=0;i<hist_bus;i++) prev_bus[i]=0;
   for(int i=0;i<hist_cap;i++) prev_cap[i]=0;
-  //Serial.begin(9600);
+  Serial.begin(9600);
 }
 
 
@@ -103,34 +108,34 @@ void loop() {
  
   //Display updates only each 0.1sec (measure in ms)
   if(millis()>(dispTime+100)){
-    bAG.clear();
+    lcd.clear();
     
     //Display the voltages and trend of the voltage on cap bank
-    bAG.setCursor(3-(String(busAverage,0).length()),0);
-    bAG.print(String(vBus,0)+"vBus");
-    bAG.setCursor(11-(String(cap_display_val).length()),0);
+    lcd.setCursor(3-(String(busAverage,0).length()),0);
+    lcd.print(String(vBus,0)+"vBus");
+    lcd.setCursor(11-(String(cap_display_val).length()),0);
     String bankStr = (String(cap_display_val) + "vCap");
-    bAG.print(bankStr);
-    if(trend) bAG.print("+"); //Charging
-    else bAG.print("-");      //Discharging
+    lcd.print(bankStr);
+    if(trend) lcd.print("+"); //Charging
+    else lcd.print("-");      //Discharging
 
     //Current max energy we could have if vCap == vBus
-    bAG.setCursor(3-String((0.008*busAverage*busAverage),0).length(),1);
-    bAG.print(String((0.008*busAverage*busAverage),0) + "Jm");
+    lcd.setCursor(3-String((0.008*busAverage*busAverage),0).length(),1);
+    lcd.print(String((0.008*busAverage*busAverage),0) + "Jm");
     
     //Current energy in the cap bank
-    bAG.setCursor(9-(String((0.008*cap_display_val*cap_display_val),0).length()),1);
-    bAG.print(String((0.008*cap_display_val*cap_display_val),0) + "Jc");
+    lcd.setCursor(9-(String((0.008*capAverage*capAverage),0).length()),1);
+    lcd.print(String((0.008*capAverage*capAverage),0) + "Jc");
 
     //Desired joules and direction we need to go
-    bAG.setCursor(15-(String(desired_joules).length()),1);
-    bAG.print(String(desired_joules));
+    lcd.setCursor(15-(String(desired_joules).length()),1);
+    lcd.print(String(desired_joules));
     if((0.008*capAverage*capAverage)<desired_joules) 
-      bAG.print("-"); //Not charged enough
+      lcd.print("-"); //Not charged enough
     else if ((0.008*capAverage*capAverage)>(desired_joules*1.5))
-      bAG.print("+"); //Significantly over
+      lcd.print("+"); //Significantly over
     else
-      bAG.print("="); //Approximately equal or greater
+      lcd.print("="); //Approximately equal or greater
 
     //Set time for framerate limit
     dispTime=millis();
@@ -146,7 +151,31 @@ void loop() {
 
   if((0.008*vCap*vCap)>desired_joules){
     digitalWrite(7, HIGH); //Means it is not charging off
+    Serial.println("Turning off cap relay");
     bank_relay = true;
+  }
+
+
+
+  //Check for fake button press, store into fake button
+  if(Serial.read()=='i'){
+    fake_button_press = false;
+  }
+
+
+  //Turn on the inverter since the button was pressed
+  if(!fake_button_press){
+    digitalWrite(6, LOW);
+    inverterTime = millis();
+    inverter_status = false; //false is on
+    fake_button_press = true; //reset the button press
+  }
+
+  //Turn off the inverter after a set min time 
+  //TODO: Add a condition to only turn off if inverter not needed
+  if((inverterTime+min_inverter_on_time)<millis()&&!inverter_status){
+    digitalWrite(6, HIGH);
+    inverter_status = true;
   }
 
 
